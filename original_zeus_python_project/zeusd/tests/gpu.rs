@@ -1,0 +1,941 @@
+mod helpers;
+
+use std::collections::HashMap;
+use std::collections::HashSet;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
+use tokio::task::JoinSet;
+use zeusd::devices::gpu::power::start_gpu_poller;
+use zeusd::devices::gpu::GpuManager;
+use zeusd::error::ZeusdError;
+use zeusd::routes::gpu::{
+    ResetGpuLockedClocks, ResetMemLockedClocks, SetGpuLockedClocks, SetMemLockedClocks,
+    SetPersistenceMode, SetPowerLimit,
+};
+
+use crate::helpers::{TestApp, ZeusdRequest, NUM_GPUS};
+
+#[tokio::test]
+async fn test_set_persistence_mode_single() {
+    let mut app = TestApp::start().await;
+
+    let resp = app
+        .send(SetPersistenceMode {
+            gpu_ids: "0".to_string(),
+            enabled: true,
+            block: true,
+        })
+        .await
+        .expect("Failed to send request");
+
+    assert_eq!(resp.status(), 200);
+    let history = app.persistence_mode_history_for_gpu(0);
+    assert_eq!(history.len(), 1);
+    assert!(history[0]);
+}
+
+#[tokio::test]
+async fn test_set_persistence_mode_multiple() {
+    let mut app = TestApp::start().await;
+
+    let num_requests = 10;
+    for i in 0..num_requests {
+        let resp = app
+            .send(SetPersistenceMode {
+                gpu_ids: (i % 4).to_string(),
+                enabled: (i / 4) % 2 == 0,
+                block: true,
+            })
+            .await
+            .expect("Failed to send request");
+
+        assert_eq!(resp.status(), 200);
+    }
+
+    assert_eq!(
+        app.persistence_mode_history_for_gpu(0),
+        vec![true, false, true]
+    );
+    assert_eq!(
+        app.persistence_mode_history_for_gpu(1),
+        vec![true, false, true]
+    );
+    assert_eq!(app.persistence_mode_history_for_gpu(2), vec![true, false]);
+    assert_eq!(app.persistence_mode_history_for_gpu(3), vec![true, false]);
+}
+
+#[tokio::test]
+async fn test_set_persistence_mode_invalid() {
+    let app = TestApp::start().await;
+
+    let client = reqwest::Client::new();
+    // Wrong field name in query params
+    let url = format!(
+        "http://127.0.0.1:{}/gpu/set_persistence_mode?gpu_ids=0&disabled=false&block=true",
+        app.port
+    );
+    let resp = client
+        .post(url)
+        .send()
+        .await
+        .expect("Failed to send request");
+    assert_eq!(resp.status(), 400);
+    let text = resp.text().await.expect("Failed to read response");
+    assert!(
+        text.contains("unknown field"),
+        "Expected 'unknown field' error, got: {text}"
+    );
+
+    // Invalid type for enabled (query param booleans must be "true" or "false")
+    let url = format!(
+        "http://127.0.0.1:{}/gpu/set_persistence_mode?gpu_ids=0&enabled=1&block=true",
+        app.port
+    );
+    let resp = client
+        .post(url)
+        .send()
+        .await
+        .expect("Failed to send request");
+    assert_eq!(resp.status(), 400);
+    let text = resp.text().await.expect("Failed to read response");
+    assert!(
+        text.contains("not `true` or `false`") || text.contains("invalid"),
+        "Expected boolean parse error, got: {text}"
+    );
+
+    for block in [true, false] {
+        // Invalid GPU ID
+        let url = format!(
+            "http://127.0.0.1:{}/gpu/set_persistence_mode?gpu_ids=5&enabled=true&block={}",
+            app.port, block
+        );
+        let resp = client
+            .post(url)
+            .send()
+            .await
+            .expect("Failed to send request");
+        assert_eq!(resp.status(), 400);
+    }
+}
+
+#[tokio::test]
+async fn test_set_persistence_mode_bulk() {
+    let mut app = TestApp::start().await;
+
+    let mut set = JoinSet::new();
+    for i in 0..10 {
+        set.spawn(app.send(SetPersistenceMode {
+            gpu_ids: "0".to_string(),
+            enabled: i % 3 == 0,
+            block: false,
+        }));
+    }
+    let mut responses = Vec::with_capacity(10);
+    for _ in 0..10 {
+        responses.push(set.join_next().await);
+    }
+    for resp in responses.into_iter() {
+        assert_eq!(
+            resp.expect("Leaked future")
+                .expect("Failed to join future")
+                .expect("Failed to send request")
+                .status(),
+            200
+        );
+    }
+
+    // After this blocking request finishes, all non-blocking ones should have completed.
+    assert_eq!(
+        app.send(SetPersistenceMode {
+            gpu_ids: "0".to_string(),
+            enabled: false,
+            block: true,
+        })
+        .await
+        .expect("Failed to send request")
+        .status(),
+        200
+    );
+
+    let history = app.persistence_mode_history_for_gpu(0);
+    assert_eq!(history.len(), 11);
+    assert_eq!(history.iter().filter(|enabled| **enabled).count(), 4);
+    assert_eq!(history.iter().filter(|enabled| !**enabled).count(), 6 + 1);
+}
+
+#[tokio::test]
+async fn test_set_power_limit_single() {
+    let mut app = TestApp::start().await;
+
+    let resp = app
+        .send(SetPowerLimit {
+            gpu_ids: "0".to_string(),
+            power_limit_mw: 100_000,
+            block: true,
+        })
+        .await
+        .expect("Failed to send request");
+
+    assert_eq!(resp.status(), 200);
+    let history = app.power_limit_history_for_gpu(0);
+    assert_eq!(history.len(), 1);
+    assert_eq!(history[0], 100_000);
+}
+
+#[tokio::test]
+async fn test_set_power_limit_multiple() {
+    let mut app = TestApp::start().await;
+
+    let num_requests = 10;
+    for i in 0..num_requests {
+        let resp = app
+            .send(SetPowerLimit {
+                gpu_ids: (i % 4).to_string(),
+                power_limit_mw: 100_000 + i * 10_000,
+                block: true,
+            })
+            .await
+            .expect("Failed to send request");
+
+        assert_eq!(resp.status(), 200);
+    }
+
+    assert_eq!(
+        app.power_limit_history_for_gpu(0),
+        vec![100_000, 140_000, 180_000]
+    );
+    assert_eq!(
+        app.power_limit_history_for_gpu(1),
+        vec![110_000, 150_000, 190_000]
+    );
+    assert_eq!(app.power_limit_history_for_gpu(2), vec![120_000, 160_000]);
+    assert_eq!(app.power_limit_history_for_gpu(3), vec![130_000, 170_000]);
+}
+
+#[tokio::test]
+async fn test_set_power_limit_invalid() {
+    let mut app = TestApp::start().await;
+
+    // Valid requests with invalid power limits (blocking).
+    // With the new batch response, errors are returned as JSON with an "errors" key.
+    let resp = app
+        .send(SetPowerLimit {
+            gpu_ids: "0".to_string(),
+            power_limit_mw: 99_000,
+            block: true,
+        })
+        .await
+        .expect("Failed to send request");
+
+    assert_eq!(resp.status(), 500);
+
+    let resp = app
+        .send(SetPowerLimit {
+            gpu_ids: "0".to_string(),
+            power_limit_mw: 330_000,
+            block: true,
+        })
+        .await
+        .expect("Failed to send request");
+
+    assert_eq!(resp.status(), 500);
+    let text = resp.text().await.expect("Failed to read response");
+    assert!(text.contains("NVML error"));
+    assert!(text.contains("invalid"));
+
+    let resp = app
+        .send(SetPowerLimit {
+            gpu_ids: "0".to_string(),
+            power_limit_mw: 10_000,
+            block: false,
+        })
+        .await
+        .expect("Failed to send request");
+
+    // Non-blocking requests should still succeed, but they won't be applied
+    assert_eq!(resp.status(), 200);
+
+    assert!(app.power_limit_history_for_gpu(0).is_empty());
+
+    // Invalid request with missing fields
+    let client = reqwest::Client::new();
+    let url = format!(
+        "http://127.0.0.1:{}/gpu/set_power_limit?gpu_ids=0&power_limit_wwww=100000&block=true",
+        app.port
+    );
+    let resp = client
+        .post(url)
+        .send()
+        .await
+        .expect("Failed to send request");
+
+    assert_eq!(resp.status(), 400);
+    let text = resp.text().await.expect("Failed to read response");
+    assert!(
+        text.contains("missing field") || text.contains("unknown field"),
+        "Expected 'missing field' or 'unknown field' error, got: {text}"
+    );
+
+    for block in [true, false] {
+        // Invalid GPU ID
+        let url = format!(
+            "http://127.0.0.1:{}/gpu/set_power_limit?gpu_ids=5&power_limit_mw=100000&block={}",
+            app.port, block
+        );
+        let resp = client
+            .post(url)
+            .send()
+            .await
+            .expect("Failed to send request");
+        assert_eq!(resp.status(), 400);
+    }
+}
+
+#[tokio::test]
+async fn test_set_power_limit_bulk() {
+    let mut app = TestApp::start().await;
+
+    let mut set = JoinSet::new();
+    for i in 0..10 {
+        set.spawn(app.send(SetPowerLimit {
+            gpu_ids: "0".to_string(),
+            power_limit_mw: 100_000 + i * 10_000,
+            block: false,
+        }));
+    }
+    let mut responses = Vec::with_capacity(10);
+    for _ in 0..10 {
+        responses.push(set.join_next().await);
+    }
+    for resp in responses.into_iter() {
+        assert_eq!(
+            resp.expect("Leaked future")
+                .expect("Failed to join future")
+                .expect("Failed to send request")
+                .status(),
+            200
+        );
+    }
+
+    // After this blocking request finishes, all non-blocking ones should have completed.
+    // 350_000 exceeds the valid range -> error (now 500 with batch error format).
+    assert_eq!(
+        app.send(SetPowerLimit {
+            gpu_ids: "0".to_string(),
+            power_limit_mw: 350_000,
+            block: true,
+        })
+        .await
+        .expect("Failed to send request")
+        .status(),
+        500
+    );
+
+    let history = app.power_limit_history_for_gpu(0);
+    assert_eq!(history.len(), 10);
+    assert_eq!(
+        HashSet::from_iter(history.into_iter()),
+        (0..10)
+            .map(|i| 100_000 + i * 10_000)
+            .collect::<HashSet<_>>()
+    );
+}
+
+#[tokio::test]
+async fn test_gpu_locked_clocks_single() {
+    let mut app = TestApp::start().await;
+
+    let resp = app
+        .send(SetGpuLockedClocks {
+            gpu_ids: "0".to_string(),
+            min_clock_mhz: 1000,
+            max_clock_mhz: 2000,
+            block: true,
+        })
+        .await
+        .expect("Failed to send request");
+
+    assert_eq!(resp.status(), 200);
+    let history = app.gpu_locked_clocks_history_for_gpu(0);
+    assert_eq!(history.len(), 1);
+    assert_eq!(history[0], (1000, 2000));
+}
+
+#[tokio::test]
+async fn test_gpu_locked_clocks_multiple() {
+    let mut app = TestApp::start().await;
+
+    let num_requests = 10;
+    for i in 0..num_requests {
+        let resp = app
+            .send(SetGpuLockedClocks {
+                gpu_ids: (i % 4).to_string(),
+                min_clock_mhz: 1000 + i * 100,
+                max_clock_mhz: 2000 + i * 100,
+                block: true,
+            })
+            .await
+            .expect("Failed to send request");
+
+        assert_eq!(resp.status(), 200);
+    }
+
+    // Reset the clocks for GPU 2
+    assert_eq!(
+        app.send(ResetGpuLockedClocks {
+            gpu_ids: "2".to_string(),
+            block: true,
+        })
+        .await
+        .expect("Failed to send request")
+        .status(),
+        200
+    );
+
+    assert_eq!(
+        app.gpu_locked_clocks_history_for_gpu(0),
+        vec![(1000, 2000), (1400, 2400), (1800, 2800)]
+    );
+    assert_eq!(
+        app.gpu_locked_clocks_history_for_gpu(1),
+        vec![(1100, 2100), (1500, 2500), (1900, 2900)]
+    );
+    assert_eq!(
+        app.gpu_locked_clocks_history_for_gpu(2),
+        vec![(1200, 2200), (1600, 2600), (0, 0)]
+    );
+    assert_eq!(
+        app.gpu_locked_clocks_history_for_gpu(3),
+        vec![(1300, 2300), (1700, 2700)]
+    );
+}
+
+#[tokio::test]
+async fn test_gpu_locked_clocks_invalid() {
+    let app = TestApp::start().await;
+
+    let client = reqwest::Client::new();
+    // Wrong field name
+    let url = format!(
+        "http://127.0.0.1:{}/gpu/set_gpu_locked_clocks?gpu_ids=0&min_clock_mhz=1000&max_clock_khz=1100&block=true",
+        app.port
+    );
+    let resp = client
+        .post(url)
+        .send()
+        .await
+        .expect("Failed to send request");
+    assert_eq!(resp.status(), 400);
+    let text = resp.text().await.expect("Failed to read response");
+    assert!(
+        text.contains("missing field") || text.contains("unknown field"),
+        "Expected 'missing field' or 'unknown field' error, got: {text}"
+    );
+
+    // Invalid type
+    let url = format!(
+        "http://127.0.0.1:{}/gpu/set_gpu_locked_clocks?gpu_ids=0&min_clock_mhz=1000&max_clock_mhz=abc&block=true",
+        app.port
+    );
+    let resp = client
+        .post(url)
+        .send()
+        .await
+        .expect("Failed to send request");
+    assert_eq!(resp.status(), 400);
+    assert!(resp
+        .text()
+        .await
+        .expect("Failed to read response")
+        .contains("invalid"));
+
+    // Wrong field name for reset
+    let url = format!(
+        "http://127.0.0.1:{}/gpu/reset_gpu_locked_clocks?gpu_ids=0&lego=false",
+        app.port
+    );
+    let resp = client
+        .post(url)
+        .send()
+        .await
+        .expect("Failed to send request");
+    assert_eq!(resp.status(), 400);
+    let text = resp.text().await.expect("Failed to read response");
+    assert!(
+        text.contains("missing field") || text.contains("unknown field"),
+        "Expected 'missing field' or 'unknown field' error, got: {text}"
+    );
+
+    for block in [true, false] {
+        // Invalid GPU ID
+        let url = format!(
+            "http://127.0.0.1:{}/gpu/reset_gpu_locked_clocks?gpu_ids=5&block={}",
+            app.port, block
+        );
+        let resp = client
+            .post(url)
+            .send()
+            .await
+            .expect("Failed to send request");
+        assert_eq!(resp.status(), 400);
+    }
+}
+
+#[tokio::test]
+async fn test_gpu_locked_clocks_bulk() {
+    let mut app = TestApp::start().await;
+
+    let mut set = JoinSet::new();
+    for i in 0..10 {
+        set.spawn(app.send(SetGpuLockedClocks {
+            gpu_ids: "0".to_string(),
+            min_clock_mhz: 1000 + i * 100,
+            max_clock_mhz: 2000 + i * 100,
+            block: false,
+        }));
+    }
+    let mut responses = Vec::with_capacity(10);
+    for _ in 0..10 {
+        responses.push(set.join_next().await);
+    }
+    for resp in responses.into_iter() {
+        assert_eq!(
+            resp.expect("Leaked future")
+                .expect("Failed to join future")
+                .expect("Failed to send request")
+                .status(),
+            200
+        );
+    }
+
+    // After this blocking request finishes, all non-blocking ones should have completed.
+    assert_eq!(
+        app.send(SetGpuLockedClocks {
+            gpu_ids: "0".to_string(),
+            min_clock_mhz: 2000,
+            max_clock_mhz: 3000,
+            block: true,
+        })
+        .await
+        .expect("Failed to send request")
+        .status(),
+        200
+    );
+
+    let history = app.gpu_locked_clocks_history_for_gpu(0);
+    assert_eq!(history.len(), 11);
+    assert_eq!(
+        HashSet::from_iter(history.into_iter()),
+        (0..11)
+            .map(|i| (1000 + i * 100, 2000 + i * 100))
+            .collect::<HashSet<_>>()
+    );
+}
+
+#[tokio::test]
+async fn test_mem_locked_clocks_single() {
+    let mut app = TestApp::start().await;
+
+    let resp = app
+        .send(SetMemLockedClocks {
+            gpu_ids: "0".to_string(),
+            min_clock_mhz: 1000,
+            max_clock_mhz: 2000,
+            block: true,
+        })
+        .await
+        .expect("Failed to send request");
+
+    assert_eq!(resp.status(), 200);
+    let history = app.mem_locked_clocks_history_for_gpu(0);
+    assert_eq!(history.len(), 1);
+    assert_eq!(history[0], (1000, 2000));
+}
+
+#[tokio::test]
+async fn test_mem_locked_clocks_multiple() {
+    let mut app = TestApp::start().await;
+
+    let num_requests = 10;
+    for i in 0..num_requests {
+        let resp = app
+            .send(SetMemLockedClocks {
+                gpu_ids: (i % 4).to_string(),
+                min_clock_mhz: 1000 + i * 100,
+                max_clock_mhz: 2000 + i * 100,
+                block: true,
+            })
+            .await
+            .expect("Failed to send request");
+
+        assert_eq!(resp.status(), 200);
+    }
+
+    // Reset the clocks for GPU 2
+    assert_eq!(
+        app.send(ResetMemLockedClocks {
+            gpu_ids: "2".to_string(),
+            block: true,
+        })
+        .await
+        .expect("Failed to send request")
+        .status(),
+        200
+    );
+
+    assert_eq!(
+        app.mem_locked_clocks_history_for_gpu(0),
+        vec![(1000, 2000), (1400, 2400), (1800, 2800)]
+    );
+    assert_eq!(
+        app.mem_locked_clocks_history_for_gpu(1),
+        vec![(1100, 2100), (1500, 2500), (1900, 2900)]
+    );
+    assert_eq!(
+        app.mem_locked_clocks_history_for_gpu(2),
+        vec![(1200, 2200), (1600, 2600), (0, 0)]
+    );
+    assert_eq!(
+        app.mem_locked_clocks_history_for_gpu(3),
+        vec![(1300, 2300), (1700, 2700)]
+    );
+}
+
+#[tokio::test]
+async fn test_mem_locked_clocks_invalid() {
+    let app = TestApp::start().await;
+
+    let client = reqwest::Client::new();
+    // Wrong field name
+    let url = format!(
+        "http://127.0.0.1:{}/gpu/set_mem_locked_clocks?gpu_ids=0&min_clock_mhz=1000&max_clock_khz=1100&block=true",
+        app.port
+    );
+    let resp = client
+        .post(url)
+        .send()
+        .await
+        .expect("Failed to send request");
+    assert_eq!(resp.status(), 400);
+    let text = resp.text().await.expect("Failed to read response");
+    assert!(
+        text.contains("missing field") || text.contains("unknown field"),
+        "Expected 'missing field' or 'unknown field' error, got: {text}"
+    );
+
+    // Invalid type
+    let url = format!(
+        "http://127.0.0.1:{}/gpu/set_mem_locked_clocks?gpu_ids=0&min_clock_mhz=1000&max_clock_mhz=abc&block=true",
+        app.port
+    );
+    let resp = client
+        .post(url)
+        .send()
+        .await
+        .expect("Failed to send request");
+    assert_eq!(resp.status(), 400);
+    assert!(resp
+        .text()
+        .await
+        .expect("Failed to read response")
+        .contains("invalid"));
+
+    // Wrong field name for reset
+    let url = format!(
+        "http://127.0.0.1:{}/gpu/reset_mem_locked_clocks?gpu_ids=0&lego=false",
+        app.port
+    );
+    let resp = client
+        .post(url)
+        .send()
+        .await
+        .expect("Failed to send request");
+    assert_eq!(resp.status(), 400);
+    let text = resp.text().await.expect("Failed to read response");
+    assert!(
+        text.contains("missing field") || text.contains("unknown field"),
+        "Expected 'missing field' or 'unknown field' error, got: {text}"
+    );
+
+    for block in [true, false] {
+        // Invalid GPU ID
+        let url = format!(
+            "http://127.0.0.1:{}/gpu/reset_mem_locked_clocks?gpu_ids=5&block={}",
+            app.port, block
+        );
+        let resp = client
+            .post(url)
+            .send()
+            .await
+            .expect("Failed to send request");
+        assert_eq!(resp.status(), 400);
+    }
+}
+
+#[tokio::test]
+async fn test_mem_locked_clocks_bulk() {
+    let mut app = TestApp::start().await;
+
+    let mut set = JoinSet::new();
+    for i in 0..10 {
+        set.spawn(app.send(SetMemLockedClocks {
+            gpu_ids: "0".to_string(),
+            min_clock_mhz: 1000 + i * 100,
+            max_clock_mhz: 2000 + i * 100,
+            block: false,
+        }));
+    }
+    let mut responses = Vec::with_capacity(10);
+    for _ in 0..10 {
+        responses.push(set.join_next().await);
+    }
+    for resp in responses.into_iter() {
+        assert_eq!(
+            resp.expect("Leaked future")
+                .expect("Failed to join future")
+                .expect("Failed to send request")
+                .status(),
+            200
+        );
+    }
+
+    // After this blocking request finishes, all non-blocking ones should have completed.
+    assert_eq!(
+        app.send(SetMemLockedClocks {
+            gpu_ids: "0".to_string(),
+            min_clock_mhz: 2000,
+            max_clock_mhz: 3000,
+            block: true,
+        })
+        .await
+        .expect("Failed to send request")
+        .status(),
+        200
+    );
+
+    let history = app.mem_locked_clocks_history_for_gpu(0);
+    assert_eq!(history.len(), 11);
+    assert_eq!(
+        HashSet::from_iter(history.into_iter()),
+        (0..11)
+            .map(|i| (1000 + i * 100, 2000 + i * 100))
+            .collect::<HashSet<_>>()
+    );
+}
+
+#[tokio::test]
+async fn test_gpu_cumulative_energy() {
+    let _app = TestApp::start().await;
+    let client = reqwest::Client::new();
+
+    // Single GPU
+    let url = format!(
+        "http://127.0.0.1:{}/gpu/get_cumulative_energy?gpu_ids=0",
+        _app.port
+    );
+    let resp = client
+        .get(&url)
+        .send()
+        .await
+        .expect("Failed to send request");
+    assert_eq!(resp.status(), 200);
+    let body: HashMap<String, serde_json::Value> = resp.json().await.expect("Failed to parse JSON");
+    assert_eq!(body["0"]["energy_mj"], 500_000);
+
+    // All GPUs (omit gpu_ids)
+    let url = format!("http://127.0.0.1:{}/gpu/get_cumulative_energy", _app.port);
+    let resp = client
+        .get(&url)
+        .send()
+        .await
+        .expect("Failed to send request");
+    assert_eq!(resp.status(), 200);
+    let body: HashMap<String, serde_json::Value> = resp.json().await.expect("Failed to parse JSON");
+    for i in 0..NUM_GPUS {
+        assert!(
+            body.contains_key(&i.to_string()),
+            "Missing GPU {} in response",
+            i
+        );
+        assert_eq!(body[&i.to_string()]["energy_mj"], 500_000);
+    }
+}
+
+#[tokio::test]
+async fn test_gpu_power_oneshot() {
+    let _app = TestApp::start().await;
+    let client = reqwest::Client::new();
+    let url = format!("http://127.0.0.1:{}/gpu/get_power", _app.port);
+    let resp = client
+        .get(&url)
+        .send()
+        .await
+        .expect("Failed to send request");
+    assert_eq!(resp.status(), 200);
+    let body: serde_json::Value = resp.json().await.expect("Failed to parse JSON");
+    assert!(body["power_mw"].is_object());
+    assert!(body["timestamp_ms"].is_number());
+}
+
+#[tokio::test]
+async fn test_gpu_power_oneshot_filtered() {
+    let _app = TestApp::start().await;
+    let client = reqwest::Client::new();
+    let url = format!("http://127.0.0.1:{}/gpu/get_power?gpu_ids=0,2", _app.port);
+    let resp = client
+        .get(&url)
+        .send()
+        .await
+        .expect("Failed to send request");
+    assert_eq!(resp.status(), 200);
+    let body: serde_json::Value = resp.json().await.expect("Failed to parse JSON");
+    let power = body["power_mw"]
+        .as_object()
+        .expect("power_mw should be object");
+    assert!(power.contains_key("0"));
+    assert!(power.contains_key("2"));
+    assert!(!power.contains_key("1"));
+    assert!(!power.contains_key("3"));
+}
+
+#[tokio::test]
+async fn test_gpu_power_oneshot_has_all_gpus() {
+    let _app = TestApp::start().await;
+    let client = reqwest::Client::new();
+    let url = format!("http://127.0.0.1:{}/gpu/get_power", _app.port);
+    let resp = client
+        .get(&url)
+        .send()
+        .await
+        .expect("Failed to send request");
+    assert_eq!(resp.status(), 200);
+    let body: serde_json::Value = resp.json().await.expect("Failed to parse JSON");
+    let power = body["power_mw"]
+        .as_object()
+        .expect("power_mw should be object");
+    for i in 0..NUM_GPUS {
+        assert!(
+            power.contains_key(&i.to_string()),
+            "Missing GPU {} in power_mw",
+            i
+        );
+    }
+}
+
+#[tokio::test]
+async fn test_gpu_power_stream_receives_events() {
+    let _app = TestApp::start().await;
+    let client = reqwest::Client::new();
+    let url = format!("http://127.0.0.1:{}/gpu/stream_power", _app.port);
+    let resp = client
+        .get(&url)
+        .send()
+        .await
+        .expect("Failed to send request");
+    assert_eq!(resp.status(), 200);
+    assert_eq!(
+        resp.headers()
+            .get("content-type")
+            .expect("Missing content-type")
+            .to_str()
+            .unwrap(),
+        "text/event-stream"
+    );
+}
+
+/// A mock GPU that counts how many times `get_instant_power_mw` is called.
+struct PollCountingGpu {
+    poll_count: Arc<AtomicUsize>,
+}
+
+impl GpuManager for PollCountingGpu {
+    fn device_count() -> Result<u32, ZeusdError> {
+        Ok(1)
+    }
+    fn set_persistence_mode(&mut self, _enabled: bool) -> Result<(), ZeusdError> {
+        Ok(())
+    }
+    fn set_power_management_limit(&mut self, _power_limit: u32) -> Result<(), ZeusdError> {
+        Ok(())
+    }
+    fn set_gpu_locked_clocks(&mut self, _min: u32, _max: u32) -> Result<(), ZeusdError> {
+        Ok(())
+    }
+    fn reset_gpu_locked_clocks(&mut self) -> Result<(), ZeusdError> {
+        Ok(())
+    }
+    fn set_mem_locked_clocks(&mut self, _min: u32, _max: u32) -> Result<(), ZeusdError> {
+        Ok(())
+    }
+    fn reset_mem_locked_clocks(&mut self) -> Result<(), ZeusdError> {
+        Ok(())
+    }
+    fn get_instant_power_mw(&mut self) -> Result<u32, ZeusdError> {
+        self.poll_count.fetch_add(1, Ordering::Relaxed);
+        Ok(150_000)
+    }
+    fn get_total_energy_consumption(&mut self) -> Result<u64, ZeusdError> {
+        Ok(500_000)
+    }
+}
+
+#[tokio::test]
+async fn test_gpu_power_lazy_polling() {
+    let poll_count = Arc::new(AtomicUsize::new(0));
+    let gpu = PollCountingGpu {
+        poll_count: poll_count.clone(),
+    };
+    let poller = start_gpu_poller(vec![(0, gpu)], 100);
+    let broadcast = poller.broadcast();
+
+    // No subscribers: poller should be asleep.
+    tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
+    assert_eq!(
+        poll_count.load(Ordering::Relaxed),
+        0,
+        "Poller should not poll when there are no subscribers"
+    );
+
+    // Add a subscriber: poller should wake up and start polling.
+    let guard = broadcast.add_subscriber();
+    tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
+    let count_with_sub = poll_count.load(Ordering::Relaxed);
+    assert!(
+        count_with_sub > 0,
+        "Poller should poll when a subscriber is present"
+    );
+
+    // Drop the subscriber: poller should go back to sleep.
+    drop(guard);
+    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+    let count_after_drop = poll_count.load(Ordering::Relaxed);
+    tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
+    let count_later = poll_count.load(Ordering::Relaxed);
+    assert_eq!(
+        count_after_drop, count_later,
+        "Poller should stop polling after the last subscriber disconnects"
+    );
+}
+
+#[tokio::test]
+async fn test_discover_endpoint() {
+    let app = TestApp::start().await;
+    let client = reqwest::Client::new();
+    let url = format!("http://127.0.0.1:{}/discover", app.port);
+    let resp = client
+        .get(&url)
+        .send()
+        .await
+        .expect("Failed to send request");
+    assert_eq!(resp.status(), 200);
+    let body: serde_json::Value = resp.json().await.expect("Failed to parse JSON");
+    let gpu_ids = body["gpu_ids"].as_array().expect("gpu_ids should be array");
+    assert_eq!(gpu_ids.len(), NUM_GPUS as usize);
+    let cpu_ids = body["cpu_ids"].as_array().expect("cpu_ids should be array");
+    assert_eq!(cpu_ids.len(), 1);
+    let dram_available = body["dram_available"]
+        .as_array()
+        .expect("dram_available should be array");
+    assert_eq!(dram_available.len(), 1);
+    assert!(dram_available[0].as_bool().unwrap());
+}
