@@ -1,8 +1,13 @@
-# Zeus C++ Power Monitor - Python Dependencies
+# Zeus Power Monitor - Python Dependencies
 #
 # Install: pip install -r requirements.txt
 # Usage:   python main.py
 #
-# pynvml: Python bindings for NVIDIA NVML (GPU management/monitoring)
-# This is the same library used internally by the Zeus project.
+# Core: At least one GPU/device backend is needed.
+
+# NVIDIA GPU (NVML bindings) - most common
 pynvml>=11.5.0
+
+# Optional backends (uncomment or install separately as needed):
+# amdsmi                # AMD GPU (requires ROCm >= 6.1)
+# zeus-apple-silicon    # Apple Silicon SoC energy measurement
