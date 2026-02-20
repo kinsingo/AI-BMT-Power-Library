@@ -21,180 +21,214 @@
 #include "../device/soc_jetson.h"
 #include "../device/soc_apple.h"
 
-namespace zeus {
+namespace zeus
+{
 
-/**
- * @brief Provides instant power readings and device capability queries.
- *
- * Delegates to GPU and SoC backends.
- * Receives non-owning pointers from PowerMonitor.
- */
-class PowerQuery {
-public:
-    struct BackendPtrs {
-        NvidiaGpuBackend*  nvidia  = nullptr;
-        AmdGpuBackend*     amd     = nullptr;
-        JetsonSoCBackend*  jetson  = nullptr;
-        AppleSoCBackend*   apple   = nullptr;
+    /**
+     * @brief Provides instant power readings and device capability queries.
+     *
+     * Delegates to GPU and SoC backends.
+     * Receives non-owning pointers from PowerMonitor.
+     */
+    class PowerQuery
+    {
+    public:
+        struct BackendPtrs
+        {
+            NvidiaGpuBackend *nvidia = nullptr;
+            AmdGpuBackend *amd = nullptr;
+            JetsonSoCBackend *jetson = nullptr;
+            AppleSoCBackend *apple = nullptr;
+        };
+
+        explicit PowerQuery(BackendPtrs backends)
+            : backends_(backends) {}
+
+        // ---- Power queries ----
+
+        /**
+         * @brief Get instantaneous GPU power draw (Watts).
+         *
+         * NVIDIA: nvmlDeviceGetPowerUsage
+         * AMD:    rsmi_dev_power_ave_get
+         */
+        double get_instant_power(int gpu_index) const
+        {
+            if (backends_.nvidia)
+                return backends_.nvidia->get_instant_power_w(gpu_index);
+            if (backends_.amd)
+                return backends_.amd->get_instant_power_w(gpu_index);
+            throw std::runtime_error("No GPU backend available for power query");
+        }
+
+        /**
+         * @brief Get the power management limit for a GPU (Watts).
+         *
+         * NVIDIA only.
+         */
+        double get_power_limit(int gpu_index) const
+        {
+            if (backends_.nvidia)
+                return backends_.nvidia->get_power_limit_w(gpu_index);
+            throw std::runtime_error(
+                "Power limit query only available on NVIDIA GPUs");
+        }
+
+        // ---- SoC power queries ----
+
+        /**
+         * @brief Get instantaneous SoC power (Watts) for a specific metric.
+         *
+         * Jetson: reads INA3221 sysfs directly.
+         * Apple:  takes two IOReport samples ~50ms apart → power = dE/dt.
+         *
+         * @param metric  SoC metric key (e.g., "jetson_cpu", "apple_gpu")
+         */
+        double get_instant_soc_power(const std::string &metric) const
+        {
+            if (backends_.jetson)
+                return backends_.jetson->get_instant_power_w(metric);
+            if (backends_.apple)
+                return backends_.apple->get_instant_power_w(metric);
+            throw std::runtime_error("No SoC backend available for power query");
+        }
+
+        // ---- Device info (GPU) ----
+
+        /** @brief Whether any GPU backend is active. */
+        bool has_gpu() const
+        {
+            return backends_.nvidia || backends_.amd;
+        }
+
+        /** @brief GPU backend type string ("NVIDIA", "AMD", or "None"). */
+        std::string gpu_type() const
+        {
+            if (backends_.nvidia)
+                return "NVIDIA";
+            if (backends_.amd)
+                return "AMD";
+            return "None";
+        }
+
+        /** @brief List of monitored GPU indices. */
+        std::vector<int> gpu_indices() const
+        {
+            if (backends_.nvidia)
+            {
+                const auto &idx = backends_.nvidia->gpu_indices();
+                return std::vector<int>(idx.begin(), idx.end());
+            }
+            if (backends_.amd)
+            {
+                const auto &idx = backends_.amd->gpu_indices();
+                return std::vector<int>(idx.begin(), idx.end());
+            }
+            return {};
+        }
+
+        // ---- Device info (SoC) ----
+
+        /** @brief Whether any SoC backend is active. */
+        bool has_soc() const
+        {
+            return backends_.jetson || backends_.apple;
+        }
+
+        /** @brief SoC backend type string ("Jetson", "Apple", or "None"). */
+        std::string soc_type() const
+        {
+            if (backends_.jetson)
+                return "Jetson";
+            if (backends_.apple)
+                return "Apple";
+            return "None";
+        }
+
+        /** @brief Set of available SoC metric keys. */
+        std::set<std::string> soc_metrics() const
+        {
+            std::set<std::string> metrics;
+            if (backends_.jetson)
+            {
+                auto m = backends_.jetson->available_metrics();
+                metrics.insert(m.begin(), m.end());
+            }
+            if (backends_.apple)
+            {
+                auto m = backends_.apple->available_metrics();
+                metrics.insert(m.begin(), m.end());
+            }
+            return metrics;
+        }
+
+        // ---- Static utility ----
+
+        /** @brief Get total GPU count (NVIDIA + AMD). */
+        static int get_device_count()
+        {
+            int count = 0;
+            try
+            {
+                count += NvidiaGpuBackend::device_count();
+            }
+            catch (...)
+            {
+            }
+            try
+            {
+                count += AmdGpuBackend::device_count();
+            }
+            catch (...)
+            {
+            }
+            return count;
+        }
+
+        /** @brief Get the name of a GPU by index. */
+        static std::string get_device_name(int gpu_index)
+        {
+            if (NvidiaGpuBackend::is_available())
+            {
+                try
+                {
+                    return NvidiaGpuBackend::get_device_name(gpu_index);
+                }
+                catch (...)
+                {
+                }
+            }
+            if (AmdGpuBackend::is_available())
+            {
+                try
+                {
+                    return AmdGpuBackend::get_device_name(gpu_index);
+                }
+                catch (...)
+                {
+                }
+            }
+            return "Unknown GPU " + std::to_string(gpu_index);
+        }
+
+        /** @brief Get architecture name (NVIDIA only). */
+        static std::string get_architecture_name(int gpu_index)
+        {
+            if (NvidiaGpuBackend::is_available())
+            {
+                try
+                {
+                    return NvidiaGpuBackend::get_architecture_name(gpu_index);
+                }
+                catch (...)
+                {
+                }
+            }
+            return "Unknown";
+        }
+
+    private:
+        BackendPtrs backends_;
     };
-
-    explicit PowerQuery(BackendPtrs backends)
-        : backends_(backends) {}
-
-    // ---- Power queries ----
-
-    /**
-     * @brief Get instantaneous GPU power draw (Watts).
-     *
-     * NVIDIA: nvmlDeviceGetPowerUsage
-     * AMD:    rsmi_dev_power_ave_get
-     */
-    double get_instant_power(int gpu_index) const {
-        if (backends_.nvidia)
-            return backends_.nvidia->get_instant_power_w(gpu_index);
-        if (backends_.amd)
-            return backends_.amd->get_instant_power_w(gpu_index);
-        throw std::runtime_error("No GPU backend available for power query");
-    }
-
-    /**
-     * @brief Get cumulative total energy (Joules) since driver load.
-     *
-     * NVIDIA Volta+ only.
-     */
-    double get_total_energy(int gpu_index) const {
-        if (backends_.nvidia)
-            return backends_.nvidia->get_total_energy_mj(gpu_index) / 1000.0;
-        throw std::runtime_error(
-            "Total energy counter only available on NVIDIA Volta+ GPUs");
-    }
-
-    /** @brief Check if a GPU supports the hardware energy counter. */
-    bool supports_energy_counter(int gpu_index) const {
-        if (backends_.nvidia)
-            return backends_.nvidia->supports_energy_counter(gpu_index);
-        return false;
-    }
-
-    /**
-     * @brief Get the power management limit for a GPU (Watts).
-     *
-     * NVIDIA only.
-     */
-    double get_power_limit(int gpu_index) const {
-        if (backends_.nvidia)
-            return backends_.nvidia->get_power_limit_w(gpu_index);
-        throw std::runtime_error(
-            "Power limit query only available on NVIDIA GPUs");
-    }
-
-    // ---- SoC power queries ----
-
-    /**
-     * @brief Get instantaneous SoC power (Watts) for a specific metric.
-     *
-     * Jetson: reads INA3221 sysfs directly.
-     * Apple:  takes two IOReport samples ~50ms apart → power = dE/dt.
-     *
-     * @param metric  SoC metric key (e.g., "jetson_cpu", "apple_gpu")
-     */
-    double get_instant_soc_power(const std::string& metric) const {
-        if (backends_.jetson)
-            return backends_.jetson->get_instant_power_w(metric);
-        if (backends_.apple)
-            return backends_.apple->get_instant_power_w(metric);
-        throw std::runtime_error("No SoC backend available for power query");
-    }
-
-    // ---- Device info (GPU) ----
-
-    /** @brief Whether any GPU backend is active. */
-    bool has_gpu() const {
-        return backends_.nvidia || backends_.amd;
-    }
-
-    /** @brief GPU backend type string ("NVIDIA", "AMD", or "None"). */
-    std::string gpu_type() const {
-        if (backends_.nvidia) return "NVIDIA";
-        if (backends_.amd)    return "AMD";
-        return "None";
-    }
-
-    /** @brief List of monitored GPU indices. */
-    std::vector<int> gpu_indices() const {
-        if (backends_.nvidia) {
-            const auto& idx = backends_.nvidia->gpu_indices();
-            return std::vector<int>(idx.begin(), idx.end());
-        }
-        if (backends_.amd) {
-            const auto& idx = backends_.amd->gpu_indices();
-            return std::vector<int>(idx.begin(), idx.end());
-        }
-        return {};
-    }
-
-    // ---- Device info (SoC) ----
-
-    /** @brief Whether any SoC backend is active. */
-    bool has_soc() const {
-        return backends_.jetson || backends_.apple;
-    }
-
-    /** @brief SoC backend type string ("Jetson", "Apple", or "None"). */
-    std::string soc_type() const {
-        if (backends_.jetson) return "Jetson";
-        if (backends_.apple)  return "Apple";
-        return "None";
-    }
-
-    /** @brief Set of available SoC metric keys. */
-    std::set<std::string> soc_metrics() const {
-        std::set<std::string> metrics;
-        if (backends_.jetson) {
-            auto m = backends_.jetson->available_metrics();
-            metrics.insert(m.begin(), m.end());
-        }
-        if (backends_.apple) {
-            auto m = backends_.apple->available_metrics();
-            metrics.insert(m.begin(), m.end());
-        }
-        return metrics;
-    }
-
-    // ---- Static utility ----
-
-    /** @brief Get total GPU count (NVIDIA + AMD). */
-    static int get_device_count() {
-        int count = 0;
-        try { count += NvidiaGpuBackend::device_count(); } catch (...) {}
-        try { count += AmdGpuBackend::device_count(); } catch (...) {}
-        return count;
-    }
-
-    /** @brief Get the name of a GPU by index. */
-    static std::string get_device_name(int gpu_index) {
-        if (NvidiaGpuBackend::is_available()) {
-            try { return NvidiaGpuBackend::get_device_name(gpu_index); }
-            catch (...) {}
-        }
-        if (AmdGpuBackend::is_available()) {
-            try { return AmdGpuBackend::get_device_name(gpu_index); }
-            catch (...) {}
-        }
-        return "Unknown GPU " + std::to_string(gpu_index);
-    }
-
-    /** @brief Get architecture name (NVIDIA only). */
-    static std::string get_architecture_name(int gpu_index) {
-        if (NvidiaGpuBackend::is_available()) {
-            try { return NvidiaGpuBackend::get_architecture_name(gpu_index); }
-            catch (...) {}
-        }
-        return "Unknown";
-    }
-
-private:
-    BackendPtrs backends_;
-};
 
 } // namespace zeus
