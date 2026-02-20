@@ -417,21 +417,6 @@ target_link_libraries(my_app PRIVATE zeus_power_monitor)
     jetson_total: 12.3456 J
 ```
 
----
-
-## Python vs C++ 비교
-
-| 항목           | Python (Zeus)                     | C++ (이 라이브러리)             |
-| -------------- | --------------------------------- | ------------------------------- |
-| 에너지 단위    | GPU/SoC: Joules                   | **모두 Joules (통일)**          |
-| `total_energy` | GPU 에너지만 합산                 | **GPU+SoC 전체 합산**           |
-| Pre-Volta 폴링 | 별도 프로세스 (multiprocessing)   | 백그라운드 스레드 (std::thread) |
-| Apple SoC      | `zeus-apple-silicon` CPython 확장 | `dlsym` 직접 호출 (IOReport)    |
-| Jetson SoC     | `multiprocessing` + asyncio       | `std::thread` 폴링              |
-| GPU 설정 변경  | 지원 (clock, power limit 등)      | 미지원 (읽기 전용 모니터링)     |
-
----
-
 ## 라이센스
 
 이 구현은 [Zeus 프로젝트](https://github.com/ml-energy/zeus) (Apache 2.0 License)의 전력 측정 아키텍처를 참고하여 작성되었습니다.
