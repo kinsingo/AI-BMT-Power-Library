@@ -45,7 +45,7 @@ endif()
 
 # Check we have at least one backend or CPU-only
 if(NOT ZEUS_USE_NVML AND NOT ZEUS_USE_ROCM_SMI)
-    message(STATUS "No GPU backend enabled. CPU (RAPL) monitoring only on Linux.")
+    message(STATUS "No GPU backend enabled. CPU (RAPL) / SoC monitoring only.")
 endif()
 
 # ============================================================================
@@ -78,6 +78,11 @@ if(UNIX)
     target_link_libraries(zeus_power_monitor INTERFACE Threads::Threads)
 endif()
 
+# --- IOKit (macOS, for Apple Silicon SoC backend) ---
+if(APPLE)
+    target_link_libraries(zeus_power_monitor INTERFACE "-framework IOKit" "-framework CoreFoundation")
+endif()
+
 # ============================================================================
 # Example Executable
 # ============================================================================
@@ -88,15 +93,21 @@ target_link_libraries(power_monitor_example PRIVATE zeus_power_monitor)
 # Install (optional)
 # ============================================================================
 install(FILES power_monitor.h DESTINATION include/zeus)
+install(DIRECTORY device/ DESTINATION include/zeus/device FILES_MATCHING PATTERN "*.h")
+install(DIRECTORY monitor/ DESTINATION include/zeus/monitor FILES_MATCHING PATTERN "*.h")
 install(TARGETS power_monitor_example DESTINATION bin)
 
 # ============================================================================
 # Summary
 # ============================================================================
 message(STATUS "=== Zeus Power Monitor ===")
-message(STATUS "  NVIDIA (NVML):    ${ZEUS_USE_NVML}")
-message(STATUS "  AMD (ROCm SMI):   ${ZEUS_USE_ROCM_SMI}")
+message(STATUS "  NVIDIA (NVML):       ${ZEUS_USE_NVML}")
+message(STATUS "  AMD (ROCm SMI):      ${ZEUS_USE_ROCM_SMI}")
 if(UNIX)
-    message(STATUS "  CPU (RAPL):       auto (Linux sysfs)")
+    message(STATUS "  CPU (RAPL):          auto (Linux sysfs)")
+    message(STATUS "  Jetson SoC (INA3221): auto (Linux sysfs)")
 endif()
-message(STATUS "  C++ standard:     ${CMAKE_CXX_STANDARD}")
+if(APPLE)
+    message(STATUS "  Apple SoC (IOKit):   auto (macOS ARM64)")
+endif()
+message(STATUS "  C++ standard:        ${CMAKE_CXX_STANDARD}")
