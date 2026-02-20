@@ -23,12 +23,6 @@ struct Measurement {
     /** GPU index -> energy consumed in Joules */
     std::map<int, double> gpu_energy;
 
-    /** CPU socket index -> energy consumed in Joules (RAPL package) */
-    std::map<int, double> cpu_energy;
-
-    /** CPU socket index -> DRAM energy in Joules (RAPL dram sub-package) */
-    std::map<int, double> dram_energy;
-
     /**
      * SoC metric name -> energy in Joules.
      *
@@ -43,27 +37,9 @@ struct Measurement {
 
     // ---- Aggregation helpers ----
 
-    /** Total energy across ALL device types (Joules). */
-    double total_energy() const {
-        return total_gpu_energy() + total_cpu_energy()
-             + total_dram_energy() + total_soc_energy();
-    }
-
     double total_gpu_energy() const {
         double t = 0.0;
         for (const auto& kv : gpu_energy) t += kv.second;
-        return t;
-    }
-
-    double total_cpu_energy() const {
-        double t = 0.0;
-        for (const auto& kv : cpu_energy) t += kv.second;
-        return t;
-    }
-
-    double total_dram_energy() const {
-        double t = 0.0;
-        for (const auto& kv : dram_energy) t += kv.second;
         return t;
     }
 

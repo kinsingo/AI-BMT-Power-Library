@@ -30,11 +30,13 @@
 #pragma once
 
 #include <algorithm>
+#include <chrono>
 #include <cstring>
 #include <map>
 #include <set>
 #include <stdexcept>
 #include <string>
+#include <thread>
 
 #if defined(__APPLE__) && defined(__arm64__)
   #include <CoreFoundation/CoreFoundation.h>
@@ -227,6 +229,40 @@ public:
             result[kv.first] = kv.second - s;
         }
         return result;
+    }
+
+    /**
+     * Get instantaneous power (Watts) for a specific metric key.
+     *
+     * IOReport provides energy samples, not instant power.
+     * This method takes two samples ~50ms apart and computes:
+     *   power = delta_energy / delta_time
+     *
+     * @param metric  Metric key (e.g., "apple_cpu_total", "apple_gpu")
+     */
+    double get_instant_power_w(const std::string& metric) const {
+#if defined(__APPLE__) && defined(__arm64__)
+        auto snap1 = snapshot_energy_j();
+        auto t1 = std::chrono::steady_clock::now();
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        auto snap2 = snapshot_energy_j();
+        auto t2 = std::chrono::steady_clock::now();
+
+        auto it1 = snap1.find(metric);
+        auto it2 = snap2.find(metric);
+        if (it1 == snap1.end() || it2 == snap2.end()) {
+            throw std::runtime_error(
+                "Apple SoC: unknown metric '" + metric + "'");
+        }
+
+        double dt = std::chrono::duration<double>(t2 - t1).count();
+        if (dt <= 0.0) dt = 0.001;  // guard against zero
+        return (it2->second - it1->second) / dt;
+#else
+        (void)metric;
+        throw std::runtime_error(
+            "Apple SoC not available on this platform.");
+#endif
     }
 
     // ================================================================== //

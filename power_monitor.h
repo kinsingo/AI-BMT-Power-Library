@@ -11,7 +11,6 @@
  *   ├── device/device_type.h      DeviceType enum
  *   ├── device/gpu_nvidia.h       NVIDIA NVML backend
  *   ├── device/gpu_amd.h          AMD ROCm SMI backend
- *   ├── device/cpu_rapl.h         Intel RAPL backend
  *   ├── device/soc_jetson.h       Jetson INA3221 backend
  *   ├── device/soc_apple.h        Apple Silicon backend
  *   ├── monitor/measurement.h     Measurement result struct
@@ -27,12 +26,11 @@
  *
  *   // Enum-based device selection — throws if device unavailable
  *   try {
- *       zeus::PowerMonitor monitor({zeus::DeviceType::NvidiaGPU,
- *                                   zeus::DeviceType::IntelCPU});
+ *       zeus::PowerMonitor monitor({zeus::DeviceType::NvidiaGPU});
  *       monitor.begin_window("train");
  *       // ... workload ...
  *       auto result = monitor.end_window("train");
- *       std::cout << "Total: " << result.total_energy() << " J\n";
+ *       std::cout << "GPU: " << result.total_gpu_energy() << " J\n";
  *   } catch (const std::runtime_error& e) {
  *       std::cout << "Device unavailable: " << e.what() << std::endl;
  *       // Continue without monitoring
@@ -50,7 +48,6 @@
 #include "device/device_type.h"
 #include "device/gpu_nvidia.h"
 #include "device/gpu_amd.h"
-#include "device/cpu_rapl.h"
 #include "device/soc_jetson.h"
 #include "device/soc_apple.h"
 #include "monitor/measurement.h"
@@ -66,6 +63,18 @@
 namespace zeus {
 
 /**
+ * @brief Configuration for PowerMonitor construction.
+ *
+ * Defined at namespace scope to work around a GCC 11 limitation with
+ * nested aggregate structs used as inline default parameters.
+ * Accessible as zeus::PowerMonitor::Config via the using alias below.
+ */
+struct PowerMonitorConfig {
+    std::vector<int> gpu_indices = {};      ///< Empty = all GPUs
+    double polling_interval_s = 0.1;        ///< Pre-Volta / Jetson polling rate
+};
+
+/**
  * @brief Unified multi-device power/energy monitor (facade).
  *
  * Users specify which devices to monitor via DeviceType enum values.
@@ -76,14 +85,8 @@ namespace zeus {
  */
 class PowerMonitor {
 public:
-    /**
-     * @brief Configuration for PowerMonitor construction.
-     */
-    struct Config {
-        std::vector<int> gpu_indices = {};      ///< Empty = all GPUs
-        std::vector<int> cpu_indices = {};      ///< Empty = all CPUs (RAPL)
-        double polling_interval_s = 0.1;        ///< Pre-Volta / Jetson polling rate
-    };
+    /** @brief Alias so existing code using PowerMonitor::Config still works. */
+    using Config = PowerMonitorConfig;
 
     // ================================================================
     // Construction
@@ -110,7 +113,7 @@ public:
      * @endcode
      */
     explicit PowerMonitor(std::vector<DeviceType> devices,
-                          Config cfg = {})
+                          Config cfg = Config{})
     {
         if (devices.empty()) {
             throw std::runtime_error(
@@ -126,10 +129,6 @@ public:
 
                 case DeviceType::AmdGPU:
                     amd_ = std::make_unique<AmdGpuBackend>(cfg.gpu_indices);
-                    break;
-
-                case DeviceType::IntelCPU:
-                    rapl_ = std::make_unique<RaplBackend>();
                     break;
 
                 case DeviceType::JetsonSoC:
@@ -172,7 +171,7 @@ public:
     }
 
     // ================================================================
-    // Power Queries (delegates to PowerQuery)
+    // Power Queries — GPU (delegates to PowerQuery)
     // ================================================================
 
     /** @brief Instantaneous GPU power draw (Watts). */
@@ -196,42 +195,43 @@ public:
     }
 
     // ================================================================
+    // Power Queries — SoC (delegates to PowerQuery)
+    // ================================================================
+
+    /**
+     * @brief Instantaneous SoC power (Watts) for a specific metric.
+     *
+     * Jetson: reads INA3221 sysfs directly.
+     * Apple:  two IOReport samples ~50ms apart → power = dE/dt.
+     *
+     * @param metric  SoC metric key (e.g., "jetson_cpu", "apple_gpu")
+     */
+    double get_instant_soc_power(const std::string& metric) const {
+        return power_query_->get_instant_soc_power(metric);
+    }
+
+    // ================================================================
     // Device Info
     // ================================================================
 
     /** @brief Whether any GPU backend is active. */
     bool has_gpu() const { return power_query_->has_gpu(); }
 
-    /** @brief Whether RAPL CPU backend is active. */
-    bool has_cpu() const { return rapl_ != nullptr; }
-
     /** @brief Whether any SoC backend is active. */
-    bool has_soc() const { return jetson_ != nullptr || apple_ != nullptr; }
+    bool has_soc() const { return power_query_->has_soc(); }
 
     /** @brief GPU backend type string ("NVIDIA", "AMD", or "None"). */
     std::string gpu_type() const { return power_query_->gpu_type(); }
 
+    /** @brief SoC backend type string ("Jetson", "Apple", or "None"). */
+    std::string soc_type() const { return power_query_->soc_type(); }
+
     /** @brief List of monitored GPU indices. */
     std::vector<int> gpu_indices() const { return power_query_->gpu_indices(); }
 
-    /** @brief List of monitored CPU socket indices (RAPL). */
-    std::vector<int> cpu_indices() const {
-        if (rapl_) return rapl_->cpu_indices();
-        return {};
-    }
-
     /** @brief Set of SoC metric keys (e.g., "jetson_cpu", "apple_gpu"). */
     std::set<std::string> soc_metrics() const {
-        std::set<std::string> metrics;
-        if (jetson_) {
-            auto m = jetson_->available_metrics();
-            metrics.insert(m.begin(), m.end());
-        }
-        if (apple_) {
-            auto m = apple_->available_metrics();
-            metrics.insert(m.begin(), m.end());
-        }
-        return metrics;
+        return power_query_->soc_metrics();
     }
 
     // ================================================================
@@ -257,7 +257,6 @@ private:
     // ---- Owned backends ----
     std::unique_ptr<NvidiaGpuBackend>  nvidia_;
     std::unique_ptr<AmdGpuBackend>     amd_;
-    std::unique_ptr<RaplBackend>       rapl_;
     std::unique_ptr<JetsonSoCBackend>  jetson_;
     std::unique_ptr<AppleSoCBackend>   apple_;
 
@@ -270,15 +269,16 @@ private:
         EnergyMonitor::BackendPtrs eptrs;
         eptrs.nvidia  = nvidia_.get();
         eptrs.amd     = amd_.get();
-        eptrs.rapl    = rapl_.get();
         eptrs.jetson  = jetson_.get();
         eptrs.apple   = apple_.get();
         energy_monitor_ = std::make_unique<EnergyMonitor>(eptrs);
 
         // Wire up backend pointers for PowerQuery
         PowerQuery::BackendPtrs pptrs;
-        pptrs.nvidia = nvidia_.get();
-        pptrs.amd    = amd_.get();
+        pptrs.nvidia  = nvidia_.get();
+        pptrs.amd     = amd_.get();
+        pptrs.jetson  = jetson_.get();
+        pptrs.apple   = apple_.get();
         power_query_ = std::make_unique<PowerQuery>(pptrs);
     }
 };

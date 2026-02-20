@@ -1,0 +1,1 @@
+/usr/bin/c++ -O3 -DNDEBUG CMakeFiles/bench_soc_jetson.dir/main_soc_jetson.cpp.o -o bench_soc_jetson  /usr/lib/x86_64-linux-gnu/libnvidia-ml.so 

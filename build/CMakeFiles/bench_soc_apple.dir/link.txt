@@ -1,0 +1,1 @@
+/usr/bin/c++ -O3 -DNDEBUG CMakeFiles/bench_soc_apple.dir/main_soc_apple_silicon.cpp.o -o bench_soc_apple  /usr/lib/x86_64-linux-gnu/libnvidia-ml.so 

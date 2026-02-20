@@ -146,6 +146,22 @@ public:
         return result;
     }
 
+    /**
+     * Get instantaneous power (Watts) for a specific rail key.
+     * Reads directly from INA3221 sysfs sensor.
+     *
+     * @param metric  Rail key (e.g., "jetson_cpu", "jetson_gpu", "jetson_total")
+     */
+    double get_instant_power_w(const std::string& metric) const {
+        for (const auto& rail : power_rails_) {
+            if (rail.key == metric) {
+                return rail.read_power_mw() / 1000.0;  // mW -> W
+            }
+        }
+        throw std::runtime_error(
+            "Jetson SoC: unknown metric '" + metric + "' for power query");
+    }
+
 private:
     // ---- Power rail representation ----
 

@@ -45,7 +45,7 @@ endif()
 
 # Check we have at least one backend or CPU-only
 if(NOT ZEUS_USE_NVML AND NOT ZEUS_USE_ROCM_SMI)
-    message(STATUS "No GPU backend enabled. CPU (RAPL) / SoC monitoring only.")
+    message(STATUS "No GPU backend enabled. SoC monitoring only.")
 endif()
 
 # ============================================================================
@@ -84,10 +84,24 @@ if(APPLE)
 endif()
 
 # ============================================================================
-# Example Executable
+# Benchmark Executables (per-device)
 # ============================================================================
-add_executable(power_monitor_example main.cpp)
-target_link_libraries(power_monitor_example PRIVATE zeus_power_monitor)
+
+# NVIDIA GPU benchmark
+add_executable(bench_gpu_nvidia main_gpu_nvidia.cpp)
+target_link_libraries(bench_gpu_nvidia PRIVATE zeus_power_monitor)
+
+# AMD GPU benchmark
+add_executable(bench_gpu_amd main_gpu_amd.cpp)
+target_link_libraries(bench_gpu_amd PRIVATE zeus_power_monitor)
+
+# Jetson SoC benchmark
+add_executable(bench_soc_jetson main_soc_jetson.cpp)
+target_link_libraries(bench_soc_jetson PRIVATE zeus_power_monitor)
+
+# Apple Silicon benchmark
+add_executable(bench_soc_apple main_soc_apple_silicon.cpp)
+target_link_libraries(bench_soc_apple PRIVATE zeus_power_monitor)
 
 # ============================================================================
 # Install (optional)
@@ -95,7 +109,8 @@ target_link_libraries(power_monitor_example PRIVATE zeus_power_monitor)
 install(FILES power_monitor.h DESTINATION include/zeus)
 install(DIRECTORY device/ DESTINATION include/zeus/device FILES_MATCHING PATTERN "*.h")
 install(DIRECTORY monitor/ DESTINATION include/zeus/monitor FILES_MATCHING PATTERN "*.h")
-install(TARGETS power_monitor_example DESTINATION bin)
+install(TARGETS bench_gpu_nvidia bench_gpu_amd bench_soc_jetson bench_soc_apple
+        DESTINATION bin)
 
 # ============================================================================
 # Summary
@@ -104,7 +119,6 @@ message(STATUS "=== Zeus Power Monitor ===")
 message(STATUS "  NVIDIA (NVML):       ${ZEUS_USE_NVML}")
 message(STATUS "  AMD (ROCm SMI):      ${ZEUS_USE_ROCM_SMI}")
 if(UNIX)
-    message(STATUS "  CPU (RAPL):          auto (Linux sysfs)")
     message(STATUS "  Jetson SoC (INA3221): auto (Linux sysfs)")
 endif()
 if(APPLE)

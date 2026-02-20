@@ -1,0 +1,1 @@
+/usr/bin/c++ -O3 -DNDEBUG CMakeFiles/power_monitor_example.dir/main.cpp.o -o power_monitor_example  /usr/lib/x86_64-linux-gnu/libnvidia-ml.so 

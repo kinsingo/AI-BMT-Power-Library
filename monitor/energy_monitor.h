@@ -20,7 +20,6 @@
 
 #include "../device/gpu_nvidia.h"
 #include "../device/gpu_amd.h"
-#include "../device/cpu_rapl.h"
 #include "../device/soc_jetson.h"
 #include "../device/soc_apple.h"
 #include "measurement.h"
@@ -39,7 +38,6 @@ public:
     struct BackendPtrs {
         NvidiaGpuBackend*  nvidia  = nullptr;
         AmdGpuBackend*     amd     = nullptr;
-        RaplBackend*       rapl    = nullptr;
         JetsonSoCBackend*  jetson  = nullptr;
         AppleSoCBackend*   apple   = nullptr;
     };
@@ -69,11 +67,6 @@ public:
         }
         if (backends_.amd) {
             state.amd_snap = backends_.amd->snapshot_energy_j();
-        }
-
-        // CPU/DRAM snapshot
-        if (backends_.rapl) {
-            state.rapl_snap = backends_.rapl->take_snapshot();
         }
 
         // SoC snapshots
@@ -122,30 +115,6 @@ public:
             }
         }
 
-        // === CPU / DRAM energy (with RAPL wraparound detection) ===
-        if (backends_.rapl) {
-            auto end_snap = backends_.rapl->take_snapshot();
-            for (const auto& kv : end_snap.cpu) {
-                double delta = kv.second - state.rapl_snap.cpu[kv.first];
-                // RAPL counters can wrap around (max_energy_range_uj).
-                // On some CPUs the range is as small as ~262 J, wrapping
-                // in seconds under load.  Handle one wraparound here.
-                if (delta < 0.0) {
-                    double max_range = backends_.rapl->max_energy_range_j(kv.first);
-                    if (max_range > 0.0) delta += max_range;
-                }
-                result.cpu_energy[kv.first] = delta;
-            }
-            for (const auto& kv : end_snap.dram) {
-                double delta = kv.second - state.rapl_snap.dram[kv.first];
-                if (delta < 0.0) {
-                    double max_range = backends_.rapl->max_dram_energy_range_j(kv.first);
-                    if (max_range > 0.0) delta += max_range;
-                }
-                result.dram_energy[kv.first] = delta;
-            }
-        }
-
         // === SoC energy ===
         if (backends_.jetson) {
             auto soc_delta = backends_.jetson->compute_energy_delta_j(state.jetson_snap);
@@ -174,9 +143,6 @@ private:
         // GPU snapshots (gpu_index -> Joules)
         std::map<int, double> nvidia_snap;
         std::map<int, double> amd_snap;
-
-        // CPU/DRAM snapshot
-        RaplBackend::Snapshot rapl_snap;
 
         // SoC snapshots (metric_name -> Joules)
         std::map<std::string, double> jetson_snap;
