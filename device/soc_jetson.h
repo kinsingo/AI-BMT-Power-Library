@@ -8,9 +8,8 @@
  *   /sys/bus/i2c/drivers/ina3221x/{device}/{subdevice}/
  *
  * Power rails detected:
- *   - CPU power (rail names containing "cpu")
- *   - GPU power (rail names containing "gpu")
- *   - Total/system power (rail names containing "system", "_in", or "total")
+ *   - All INA3221 rails discovered from sysfs (e.g., VDD_IN, VDD_CPU_GPU_CV, VDD_SOC)
+ *   - Rail names are used as-is from the hardware labels
  *
  * Background polling thread integrates instantaneous power → cumulative energy.
  *
@@ -27,6 +26,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <fstream>
 #include <map>
 #include <mutex>
@@ -42,8 +42,8 @@ namespace zeus {
 /**
  * @brief NVIDIA Jetson SoC energy backend via INA3221 sensor.
  *
- * Metrics stored in soc_energy with keys:
- *   "jetson_cpu", "jetson_gpu", "jetson_total"
+ * Metrics stored in soc_energy with keys taken directly from hardware rail names
+ *   e.g., "VDD_IN", "VDD_CPU_GPU_CV", "VDD_SOC"
  *
  * On non-Linux or non-Jetson platforms, the constructor throws.
  */
@@ -64,8 +64,9 @@ public:
             (stat("/usr/lib/aarch64-linux-gnu/tegra", &st) == 0) ||
             (stat("/etc/nv_tegra_release", &st) == 0);
         if (!has_tegra) return false;
-        // Also check INA3221 driver exists
-        return (stat("/sys/bus/i2c/drivers/ina3221x", &st) == 0);
+        // Also check INA3221 driver exists (driver may be "ina3221" or "ina3221x")
+        return (stat("/sys/bus/i2c/drivers/ina3221", &st) == 0) ||
+               (stat("/sys/bus/i2c/drivers/ina3221x", &st) == 0);
 #else
         return false;
 #endif
@@ -82,7 +83,7 @@ public:
             throw std::runtime_error(
                 "Jetson SoC monitoring requested but no Jetson device detected. "
                 "Requires /usr/lib/aarch64-linux-gnu/tegra or /etc/nv_tegra_release "
-                "and /sys/bus/i2c/drivers/ina3221x.");
+                "and /sys/bus/i2c/drivers/ina3221 (or ina3221x).");
         }
         discover_power_rails();
         if (power_rails_.empty()) {
@@ -198,6 +199,8 @@ private:
     std::thread polling_thread_;
     std::atomic<bool> polling_active_;
     double polling_interval_;
+    std::condition_variable stop_cv_;
+    std::mutex stop_mutex_;
 
     void start_polling() {
         polling_active_ = true;
@@ -208,24 +211,32 @@ private:
                 double dt = std::chrono::duration<double>(now - prev_ts).count();
                 prev_ts = now;
 
-                std::lock_guard<std::mutex> lock(energy_mutex_);
-                for (const auto& rail : power_rails_) {
-                    try {
-                        double power_mw = rail.read_power_mw();
-                        // energy (mJ) = power (mW) * time (s)
-                        cumulative_energy_mj_[rail.key] += power_mw * dt;
-                    } catch (...) {}
+                {
+                    std::lock_guard<std::mutex> lock(energy_mutex_);
+                    for (const auto& rail : power_rails_) {
+                        try {
+                            double power_mw = rail.read_power_mw();
+                            cumulative_energy_mj_[rail.key] += power_mw * dt;
+                        } catch (...) {}
+                    }
                 }
 
-                std::this_thread::sleep_for(
-                    std::chrono::duration<double>(polling_interval_));
+                // Interruptible sleep: wakes immediately when stop_polling() is called
+                std::unique_lock<std::mutex> lk(stop_mutex_);
+                stop_cv_.wait_for(lk,
+                    std::chrono::duration<double>(polling_interval_),
+                    [this]{ return !polling_active_.load(); });
             }
         });
     }
 
     void stop_polling() {
         if (polling_active_.load()) {
-            polling_active_ = false;
+            {
+                std::lock_guard<std::mutex> lk(stop_mutex_);
+                polling_active_ = false;
+            }
+            stop_cv_.notify_one();  // wake thread immediately
             if (polling_thread_.joinable()) polling_thread_.join();
         }
     }
@@ -263,56 +274,68 @@ private:
         return val;
     }
 
-    /**
-     * Classify a rail name to a jetson metric key.
-     * Returns "" if the rail is not a recognized type.
-     */
-    static std::string classify_rail(const std::string& rail_name) {
-        std::string lower = rail_name;
-        std::transform(lower.begin(), lower.end(), lower.begin(), ::tolower);
-
-        if (lower.find("cpu") != std::string::npos) return "jetson_cpu";
-        if (lower.find("gpu") != std::string::npos) return "jetson_gpu";
-        if (lower.find("system") != std::string::npos ||
-            lower.find("_in") != std::string::npos ||
-            lower.find("total") != std::string::npos) return "jetson_total";
-        return "";
-    }
 
     // ---- Discovery ----
 
 #ifdef __linux__
+    /** Scan a single directory for power rail label files and register rails. */
+    void discover_from_dir(const std::string& path, std::set<std::string>& found) {
+        discover_from_labels(path, found);
+        discover_from_rail_names(path, found);
+    }
+
     void discover_power_rails() {
-        const std::string base = "/sys/bus/i2c/drivers/ina3221x";
-        DIR* base_dir = opendir(base.c_str());
-        if (!base_dir) return;
+        // Support both "ina3221" (newer kernels) and "ina3221x" (older Jetson BSP)
+        const std::vector<std::string> bases = {
+            "/sys/bus/i2c/drivers/ina3221",
+            "/sys/bus/i2c/drivers/ina3221x",
+        };
 
         // Track which keys we've already found (avoid duplicates)
         std::set<std::string> found_keys;
 
-        struct dirent* device_entry;
-        while ((device_entry = readdir(base_dir)) != nullptr) {
-            std::string device_name = device_entry->d_name;
-            if (device_name == "." || device_name == ".." ||
-                device_name == "bind" || device_name == "unbind" ||
-                device_name == "module") continue;
+        for (const auto& base : bases) {
+            DIR* base_dir = opendir(base.c_str());
+            if (!base_dir) continue;
 
-            std::string device_path = base + "/" + device_name;
-            DIR* device_dir = opendir(device_path.c_str());
-            if (!device_dir) continue;
+            struct dirent* device_entry;
+            while ((device_entry = readdir(base_dir)) != nullptr) {
+                std::string device_name = device_entry->d_name;
+                if (device_name == "." || device_name == ".." ||
+                    device_name == "bind" || device_name == "unbind" ||
+                    device_name == "module" || device_name == "uevent") continue;
 
-            struct dirent* sub_entry;
-            while ((sub_entry = readdir(device_dir)) != nullptr) {
-                std::string sub_name = sub_entry->d_name;
-                if (sub_name == "." || sub_name == "..") continue;
+                std::string device_path = base + "/" + device_name;
+                DIR* device_dir = opendir(device_path.c_str());
+                if (!device_dir) continue;
 
-                std::string sub_path = device_path + "/" + sub_name;
-                discover_from_labels(sub_path, found_keys);
-                discover_from_rail_names(sub_path, found_keys);
+                struct dirent* sub_entry;
+                while ((sub_entry = readdir(device_dir)) != nullptr) {
+                    std::string sub_name = sub_entry->d_name;
+                    if (sub_name == "." || sub_name == "..") continue;
+
+                    std::string sub_path = device_path + "/" + sub_name;
+
+                    // Try labels directly in sub_path
+                    discover_from_dir(sub_path, found_keys);
+
+                    // Also descend one more level (for hwmon/hwmon1/ structure)
+                    DIR* sub_dir = opendir(sub_path.c_str());
+                    if (sub_dir) {
+                        struct dirent* sub2_entry;
+                        while ((sub2_entry = readdir(sub_dir)) != nullptr) {
+                            std::string sub2_name = sub2_entry->d_name;
+                            if (sub2_name == "." || sub2_name == "..") continue;
+                            std::string sub2_path = sub_path + "/" + sub2_name;
+                            discover_from_dir(sub2_path, found_keys);
+                        }
+                        closedir(sub_dir);
+                    }
+                }
+                closedir(device_dir);
             }
-            closedir(device_dir);
+            closedir(base_dir);
         }
-        closedir(base_dir);
     }
 
     /**
@@ -334,10 +357,7 @@ private:
 
             std::string idx_part = fname.substr(2, label_pos - 2);
             std::string rail_name = read_sysfs_string(path + "/" + fname);
-            if (rail_name.empty()) continue;
-
-            std::string key = classify_rail(rail_name);
-            if (key.empty() || found.count(key)) continue;
+            if (rail_name.empty() || found.count(rail_name)) continue;
 
             // Try direct power file
             std::string power_path = path + "/power" + idx_part + "_input";
@@ -345,13 +365,13 @@ private:
             std::string curr_path  = path + "/curr" + idx_part + "_input";
 
             if (file_exists(power_path)) {
-                power_rails_.push_back({key, PowerStrategy::DirectPower,
+                power_rails_.push_back({rail_name, PowerStrategy::DirectPower,
                                         power_path, "", ""});
-                found.insert(key);
+                found.insert(rail_name);
             } else if (file_exists(volt_path) && file_exists(curr_path)) {
-                power_rails_.push_back({key, PowerStrategy::VoltageCurrentProduct,
+                power_rails_.push_back({rail_name, PowerStrategy::VoltageCurrentProduct,
                                         "", volt_path, curr_path});
-                found.insert(key);
+                found.insert(rail_name);
             }
         }
         closedir(dir);
@@ -375,10 +395,7 @@ private:
 
             std::string idx_part = fname.substr(prefix.size());
             std::string rail_name = read_sysfs_string(path + "/" + fname);
-            if (rail_name.empty()) continue;
-
-            std::string key = classify_rail(rail_name);
-            if (key.empty() || found.count(key)) continue;
+            if (rail_name.empty() || found.count(rail_name)) continue;
 
             // Try direct power file
             std::string power_path = path + "/in_power" + idx_part + "_input";
@@ -386,13 +403,13 @@ private:
             std::string curr_path  = path + "/in_current" + idx_part + "_input";
 
             if (file_exists(power_path)) {
-                power_rails_.push_back({key, PowerStrategy::DirectPower,
+                power_rails_.push_back({rail_name, PowerStrategy::DirectPower,
                                         power_path, "", ""});
-                found.insert(key);
+                found.insert(rail_name);
             } else if (file_exists(volt_path) && file_exists(curr_path)) {
-                power_rails_.push_back({key, PowerStrategy::VoltageCurrentProduct,
+                power_rails_.push_back({rail_name, PowerStrategy::VoltageCurrentProduct,
                                         "", volt_path, curr_path});
-                found.insert(key);
+                found.insert(rail_name);
             }
         }
         closedir(dir);

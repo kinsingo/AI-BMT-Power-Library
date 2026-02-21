@@ -1,1 +1,1 @@
-/usr/bin/c++ -O3 -DNDEBUG CMakeFiles/bench_gpu_nvidia.dir/main_gpu_nvidia.cpp.o -o bench_gpu_nvidia  /usr/lib/x86_64-linux-gnu/libnvidia-ml.so 
+/usr/bin/c++ -O3 -DNDEBUG CMakeFiles/bench_gpu_nvidia.dir/main_gpu_nvidia.cpp.o -o bench_gpu_nvidia
