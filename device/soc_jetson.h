@@ -74,9 +74,9 @@ public:
 
     // ---- Construction ----
 
-    explicit JetsonSoCBackend(double polling_interval_s = 0.1)
+    explicit JetsonSoCBackend()
         : polling_active_(false)
-        , polling_interval_(polling_interval_s)
+        , polling_interval_(0.1)
     {
 #ifdef __linux__
         if (!is_available()) {
@@ -96,7 +96,6 @@ public:
         }
         start_polling();
 #else
-        (void)polling_interval_s;
         throw std::runtime_error(
             "Jetson SoC monitoring requires Linux (aarch64 Jetson platform).");
 #endif

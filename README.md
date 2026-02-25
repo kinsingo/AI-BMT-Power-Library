@@ -3,7 +3,7 @@
 **GPU, SoC** 전력(Power) 및 에너지(Energy) 측정을 위한 **C++ header-only 라이브러리**.  
 Python [Zeus 프로젝트](https://github.com/ml-energy/zeus)의 전력 측정 기능을 C++로 포팅한 것입니다.
 
-> **"Zeus now supports AMD GPU, Apple Silicon, and NVIDIA Jetson platform energy measurement"**
+> **"Zeus now supports Apple Silicon, and NVIDIA Jetson platform energy measurement"**
 
 ---
 
@@ -12,7 +12,6 @@ Python [Zeus 프로젝트](https://github.com/ml-energy/zeus)의 전력 측정 �
 | 디바이스              | C++ 지원              | 시스템 API                                                               | 플랫폼              |
 | --------------------- | --------------------- | ------------------------------------------------------------------------ | ------------------- |
 | **NVIDIA GPU**        | ✅ `NvidiaGpuBackend` | NVML (`nvmlDeviceGetTotalEnergyConsumption` / `nvmlDeviceGetPowerUsage`) | Windows / Linux     |
-| **AMD GPU**           | ✅ `AmdGpuBackend`    | ROCm SMI (`rsmi_dev_energy_count_get` / `rsmi_dev_power_ave_get`)        | Linux (ROCm >= 6.1) |
 | **Apple Silicon SoC** | ✅ `AppleSoCBackend`  | IOReport private API via `dlsym` (CPU, GPU, ANE, DRAM)                   | macOS (ARM64)       |
 | **NVIDIA Jetson SoC** | ✅ `JetsonSoCBackend` | INA3221 sysfs (`/sys/bus/i2c/drivers/ina3221x/`)                         | Linux (aarch64)     |
 
@@ -24,7 +23,6 @@ Python [Zeus 프로젝트](https://github.com/ml-energy/zeus)의 전력 측정 �
 | --------------------------- | --------------------------------------------- | -------------------------------------------- |
 | `zeus/monitor/energy.py`    | `ZeusMonitor` (`begin_window` / `end_window`) | `monitor/energy_monitor.h` (`EnergyMonitor`) |
 | `zeus/device/gpu/nvidia.py` | NVML API 래퍼                                 | `device/gpu_nvidia.h` (`NvidiaGpuBackend`)   |
-| `zeus/device/gpu/amd.py`    | AMD SMI API 래퍼                              | `device/gpu_amd.h` (`AmdGpuBackend`)         |
 | `zeus/device/soc/apple.py`  | Apple Silicon 에너지 모니터                   | `device/soc_apple.h` (`AppleSoCBackend`)     |
 | `zeus/device/soc/jetson.py` | Jetson INA3221 전력 레일                      | `device/soc_jetson.h` (`JetsonSoCBackend`)   |
 | `zeus/monitor/power.py`     | Pre-Volta GPU 전력 폴링 + 사다리꼴 적분       | `device/gpu_nvidia.h` (polling thread)       |
@@ -54,11 +52,6 @@ Python [Zeus 프로젝트](https://github.com/ml-energy/zeus)의 전력 측정 �
     Pre-Volta: polling thread  trapezoidal integration
 
 
-   device/gpu_amd.h
-    rsmi_dev_energy_count_get()  energy counter
-    rsmi_dev_power_ave_get()     instant power
-
-
    device/soc_jetson.h
     INA3221 sysfs power rails (polling + integration)
     CPU rail + GPU rail + Total rail
@@ -77,7 +70,6 @@ Python [Zeus 프로젝트](https://github.com/ml-energy/zeus)의 전력 측정 �
 | -------------------------- | ---------------------------------------------------------- | ------------------------------ |
 | **NVIDIA GPU (Volta+)**    | 하드웨어 에너지 카운터 (mJ 단위, `end - start`)            | —                              |
 | **NVIDIA GPU (Pre-Volta)** | 백그라운드 스레드 폴링 -> 사다리꼴 적분                    | `instant_power x elapsed_time` |
-| **AMD GPU**                | `rsmi_dev_energy_count_get` (uJ x resolution, 누적 카운터) | —                              |
 | **Apple Silicon**          | IOReport "Energy Model" 채널 그룹 (nJ 단위)                | —                              |
 | **Jetson**                 | INA3221 sysfs 전력 레일 폴링 -> `power_mW x dt` 적분       | Voltage x Current 계산         |
 
@@ -94,13 +86,6 @@ Python [Zeus 프로젝트](https://github.com/ml-energy/zeus)의 전력 측정 �
 | 아키텍처 확인        | `nvmlDeviceGetArchitecture()`                  | —    |
 | 전력 제한            | `nvmlDeviceGetPowerManagementLimit()`          | mW   |
 | GPU 이름/수          | `nvmlDeviceGetName()` / `nvmlDeviceGetCount()` | —    |
-
-### AMD ROCm SMI
-
-| 용도        | 함수                          | 단위                      |
-| ----------- | ----------------------------- | ------------------------- |
-| 누적 에너지 | `rsmi_dev_energy_count_get()` | uJ (x counter_resolution) |
-| 평균 전력   | `rsmi_dev_power_ave_get()`    | μW                        |
 
 ### Apple IOReport (macOS ARM64)
 
@@ -128,9 +113,8 @@ Python [Zeus 프로젝트](https://github.com/ml-energy/zeus)의 전력 측정 �
 AI-BMT-Power-Library/
  power_monitor.h              # Facade — 사용자가 include할 유일한 헤더
  device/
-    device_type.h            # DeviceType enum (NvidiaGPU, AmdGPU, ...)
+    device_type.h            # DeviceType enum (NvidiaGPU, JetsonSoC, AppleSoC)
     gpu_nvidia.h             # NVIDIA NVML 백엔드 (Volta+ hw 카운터 + Pre-Volta 폴링)
-    gpu_amd.h                # AMD ROCm SMI 백엔드
     soc_jetson.h             # Jetson INA3221 백엔드 (폴링 스레드)
     soc_apple.h              # Apple Silicon IOReport 백엔드 (dlsym)
  monitor/
@@ -138,7 +122,6 @@ AI-BMT-Power-Library/
     energy_monitor.h         # begin_window / end_window 오케스트레이터
     power_query.h            # 순간 전력 및 디바이스 정보 조회
  main_gpu_nvidia.cpp          # NVIDIA GPU 벤치마크
- main_gpu_amd.cpp             # AMD GPU 벤치마크
  main_soc_jetson.cpp          # Jetson SoC 벤치마크
  main_soc_apple_silicon.cpp   # Apple Silicon 벤치마크
  CMakeLists.txt               # CMake 빌드 설정
@@ -181,7 +164,6 @@ zeus::PowerMonitor monitor({zeus::DeviceType::AppleSoC});
 // Config로 세부 설정
 zeus::PowerMonitor::Config cfg;
 cfg.gpu_indices = {0, 1};          // 특정 GPU만
-cfg.polling_interval_s = 0.05;     // 50ms 폴링 (Pre-Volta / Jetson)
 zeus::PowerMonitor monitor({zeus::DeviceType::NvidiaGPU}, cfg);
 ```
 
@@ -225,7 +207,7 @@ double soc_pw = monitor.get_instant_soc_power("jetson_cpu");  // 순간 전력 (
 ```cpp
 bool         has_gpu = monitor.has_gpu();       // GPU 백엔드 활성 여부
 bool         has_soc = monitor.has_soc();       // SoC 백엔드 활성 여부
-std::string  gtype   = monitor.gpu_type();      // "NVIDIA", "AMD", "None"
+std::string  gtype   = monitor.gpu_type();      // "NVIDIA", "None"
 std::string  stype   = monitor.soc_type();      // "Jetson", "Apple", "None"
 auto         gpus    = monitor.gpu_indices();   // 모니터링 중인 GPU 목록
 auto         soc_m   = monitor.soc_metrics();   // SoC 메트릭 키 집합
@@ -234,13 +216,12 @@ auto         soc_m   = monitor.soc_metrics();   // SoC 메트릭 키 집합
 #### 정적 유틸리티
 
 ```cpp
-int         count = zeus::PowerMonitor::get_device_count();       // NVIDIA + AMD
+int         count = zeus::PowerMonitor::get_device_count();       // NVIDIA
 std::string name  = zeus::PowerMonitor::get_device_name(0);
 std::string arch  = zeus::PowerMonitor::get_architecture_name(0);
 
 // 개별 백엔드 가용성 확인 (PowerMonitor 생성 전)
 bool nv   = zeus::NvidiaGpuBackend::is_available();
-bool amd  = zeus::AmdGpuBackend::is_available();
 bool jts  = zeus::JetsonSoCBackend::is_available();
 bool apl  = zeus::AppleSoCBackend::is_available();
 ```
@@ -263,11 +244,31 @@ struct Measurement {
 ```cpp
 enum class DeviceType {
     NvidiaGPU,  // NVIDIA GPU via NVML
-    AmdGPU,     // AMD GPU via ROCm SMI
     JetsonSoC,  // NVIDIA Jetson SoC via INA3221
     AppleSoC,   // Apple Silicon via IOReport
 };
 ```
+
+---
+
+## 샘플링 간격
+
+각 백엔드의 에너지 측정 방식과 샘플링 간격입니다.
+
+| 디바이스 | 측정 방식 | 샘플링 간격 | 설정 가능 여부 | 비고 |
+| -------- | --------- | ----------- | -------------- | ---- |
+| **NVIDIA GPU (Volta+)** | 하드웨어 에너지 카운터 읽기 | 해당 없음 | ❌ 설정 불가 | `nvmlDeviceGetTotalEnergyConsumption()` 호출 시점에 누적값 스냅샷 |
+| **NVIDIA GPU (Pre-Volta)** | 백그라운드 폴링 + 사다리꼴 적분 | **100ms 고정** | ❌ 설정 불가 | 코드에 하드코딩 (`polling_interval_ = 0.1`) |
+| **Apple Silicon** | IOReport 스냅샷 기반 | 해당 없음 | ❌ 설정 불가 | `begin_window` / `end_window` 호출 시점에 IOReport 샘플 취득 |
+| **Jetson SoC (INA3221)** | 백그라운드 폴링 + 적분 | **100ms 고정** | ❌ 설정 불가 | 코드에 하드코딩 (`polling_interval_ = 0.1`) |
+
+### 설정 불가 사유
+
+| 구분 | 이유 |
+| ---- | ---- |
+| **NVIDIA Volta+** | API 자체가 하드웨어 내부 카운터를 임의 시점에 읽는 방식 — 드라이버/하드웨어가 카운터를 자체 갱신하므로 별도 샘플링 불필요 |
+| **Apple Silicon** | IOReport가 요청 당시의 누적 에너지를 반환하는 스냅샷 구조 — 폴링 스레드 없이 `begin_window` / `end_window` 시점에만 측정 |
+| **NVIDIA Pre-Volta / Jetson** | 폴링 스레드는 100ms로 고정되어 있으며, `PowerMonitor::Config`에서 별도로 변경할 수 없음 |
 
 ---
 
@@ -278,7 +279,6 @@ enum class DeviceType {
 - **CMake** 3.18
 - **C++17** 지원 컴파일러 (MSVC 2019+, GCC 7+, Clang 5+)
 - **NVIDIA CUDA Toolkit** (NVML 사용 시, 기본 활성화)
-- **ROCm** 6.1 (AMD GPU 사용 시, 수동 활성화)
 - **IOKit.framework** (Apple Silicon, macOS에서 자동 링크)
 
 ### CMake 옵션
@@ -286,7 +286,6 @@ enum class DeviceType {
 | 옵션                | 기본값 | 설명                                 |
 | ------------------- | ------ | ------------------------------------ |
 | `ZEUS_USE_NVML`     | `ON`   | NVIDIA NVML 지원 (CUDA Toolkit 필요) |
-| `ZEUS_USE_ROCM_SMI` | `OFF`  | AMD ROCm SMI 지원 (ROCm 필요)        |
 
 Jetson (INA3221), Apple Silicon (IOReport)은 자동 감지됩니다.
 
@@ -306,15 +305,6 @@ cd build
 cmake .. -DCMAKE_BUILD_TYPE=Release
 make -j$(nproc)
 ./bench_gpu_nvidia
-```
-
-### Linux — AMD
-
-```bash
-cd build
-cmake .. -DCMAKE_BUILD_TYPE=Release -DZEUS_USE_NVML=OFF -DZEUS_USE_ROCM_SMI=ON
-make -j$(nproc) # nproc = CPU 코어 수 (병렬 빌드)
-./bench_gpu_amd
 ```
 
 ### Linux — Jetson
@@ -349,7 +339,6 @@ target_link_libraries(my_app PRIVATE zeus_power_monitor)
 | 실행 파일          | 대상 디바이스 | 소스 파일                    |
 | ------------------ | ------------- | ---------------------------- |
 | `bench_gpu_nvidia` | NVIDIA GPU    | `main_gpu_nvidia.cpp`        |
-| `bench_gpu_amd`    | AMD GPU       | `main_gpu_amd.cpp`           |
 | `bench_soc_jetson` | Jetson SoC    | `main_soc_jetson.cpp`        |
 | `bench_soc_apple`  | Apple Silicon | `main_soc_apple_silicon.cpp` |
 

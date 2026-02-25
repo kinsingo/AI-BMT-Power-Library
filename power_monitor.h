@@ -10,7 +10,6 @@
  *   power_monitor.h (facade — this file)
  *   ├── device/device_type.h      DeviceType enum
  *   ├── device/gpu_nvidia.h       NVIDIA NVML backend
- *   ├── device/gpu_amd.h          AMD ROCm SMI backend
  *   ├── device/soc_jetson.h       Jetson INA3221 backend
  *   ├── device/soc_apple.h        Apple Silicon backend
  *   ├── monitor/measurement.h     Measurement result struct
@@ -47,7 +46,6 @@
 // ---------------------------------------------------------------------------
 #include "device/device_type.h"
 #include "device/gpu_nvidia.h"
-#include "device/gpu_amd.h"
 #include "device/soc_jetson.h"
 #include "device/soc_apple.h"
 #include "monitor/measurement.h"
@@ -73,7 +71,6 @@ namespace zeus
     struct PowerMonitorConfig
     {
         std::vector<int> gpu_indices = {}; ///< Empty = all GPUs
-        double polling_interval_s = 0.1;   ///< Pre-Volta / Jetson polling rate
     };
 
     /**
@@ -130,16 +127,11 @@ namespace zeus
                 {
                 case DeviceType::NvidiaGPU:
                     nvidia_ = std::make_unique<NvidiaGpuBackend>(
-                        cfg.gpu_indices, cfg.polling_interval_s);
-                    break;
-
-                case DeviceType::AmdGPU:
-                    amd_ = std::make_unique<AmdGpuBackend>(cfg.gpu_indices);
+                        cfg.gpu_indices);
                     break;
 
                 case DeviceType::JetsonSoC:
-                    jetson_ = std::make_unique<JetsonSoCBackend>(
-                        cfg.polling_interval_s);
+                    jetson_ = std::make_unique<JetsonSoCBackend>();
                     break;
 
                 case DeviceType::AppleSoC:
@@ -221,7 +213,7 @@ namespace zeus
         /** @brief Whether any SoC backend is active. */
         bool has_soc() const { return power_query_->has_soc(); }
 
-        /** @brief GPU backend type string ("NVIDIA", "AMD", or "None"). */
+        /** @brief GPU backend type string ("NVIDIA", or "None"). */
         std::string gpu_type() const { return power_query_->gpu_type(); }
 
         /** @brief SoC backend type string ("Jetson", "Apple", or "None"). */
@@ -240,7 +232,7 @@ namespace zeus
         // Static Utilities
         // ================================================================
 
-        /** @brief Get total GPU count (NVIDIA + AMD). */
+        /** @brief Get total GPU count (NVIDIA). */
         static int get_device_count()
         {
             return PowerQuery::get_device_count();
@@ -261,7 +253,6 @@ namespace zeus
     private:
         // ---- Owned backends ----
         std::unique_ptr<NvidiaGpuBackend> nvidia_;
-        std::unique_ptr<AmdGpuBackend> amd_;
         std::unique_ptr<JetsonSoCBackend> jetson_;
         std::unique_ptr<AppleSoCBackend> apple_;
 
@@ -274,7 +265,6 @@ namespace zeus
             // Wire up backend pointers for EnergyMonitor
             EnergyMonitor::BackendPtrs eptrs;
             eptrs.nvidia = nvidia_.get();
-            eptrs.amd = amd_.get();
             eptrs.jetson = jetson_.get();
             eptrs.apple = apple_.get();
             energy_monitor_ = std::make_unique<EnergyMonitor>(eptrs);
@@ -282,7 +272,6 @@ namespace zeus
             // Wire up backend pointers for PowerQuery
             PowerQuery::BackendPtrs pptrs;
             pptrs.nvidia = nvidia_.get();
-            pptrs.amd = amd_.get();
             pptrs.jetson = jetson_.get();
             pptrs.apple = apple_.get();
             power_query_ = std::make_unique<PowerQuery>(pptrs);

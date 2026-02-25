@@ -17,7 +17,6 @@
 #include <vector>
 
 #include "../device/gpu_nvidia.h"
-#include "../device/gpu_amd.h"
 #include "../device/soc_jetson.h"
 #include "../device/soc_apple.h"
 
@@ -36,7 +35,6 @@ namespace zeus
         struct BackendPtrs
         {
             NvidiaGpuBackend *nvidia = nullptr;
-            AmdGpuBackend *amd = nullptr;
             JetsonSoCBackend *jetson = nullptr;
             AppleSoCBackend *apple = nullptr;
         };
@@ -50,14 +48,11 @@ namespace zeus
          * @brief Get instantaneous GPU power draw (Watts).
          *
          * NVIDIA: nvmlDeviceGetPowerUsage
-         * AMD:    rsmi_dev_power_ave_get
          */
         double get_instant_power(int gpu_index) const
         {
             if (backends_.nvidia)
                 return backends_.nvidia->get_instant_power_w(gpu_index);
-            if (backends_.amd)
-                return backends_.amd->get_instant_power_w(gpu_index);
             throw std::runtime_error("No GPU backend available for power query");
         }
 
@@ -98,16 +93,14 @@ namespace zeus
         /** @brief Whether any GPU backend is active. */
         bool has_gpu() const
         {
-            return backends_.nvidia || backends_.amd;
+            return backends_.nvidia != nullptr;
         }
 
-        /** @brief GPU backend type string ("NVIDIA", "AMD", or "None"). */
+        /** @brief GPU backend type string ("NVIDIA", or "None"). */
         std::string gpu_type() const
         {
             if (backends_.nvidia)
                 return "NVIDIA";
-            if (backends_.amd)
-                return "AMD";
             return "None";
         }
 
@@ -117,11 +110,6 @@ namespace zeus
             if (backends_.nvidia)
             {
                 const auto &idx = backends_.nvidia->gpu_indices();
-                return std::vector<int>(idx.begin(), idx.end());
-            }
-            if (backends_.amd)
-            {
-                const auto &idx = backends_.amd->gpu_indices();
                 return std::vector<int>(idx.begin(), idx.end());
             }
             return {};
@@ -164,20 +152,13 @@ namespace zeus
 
         // ---- Static utility ----
 
-        /** @brief Get total GPU count (NVIDIA + AMD). */
+        /** @brief Get total GPU count (NVIDIA). */
         static int get_device_count()
         {
             int count = 0;
             try
             {
                 count += NvidiaGpuBackend::device_count();
-            }
-            catch (...)
-            {
-            }
-            try
-            {
-                count += AmdGpuBackend::device_count();
             }
             catch (...)
             {
@@ -193,16 +174,6 @@ namespace zeus
                 try
                 {
                     return NvidiaGpuBackend::get_device_name(gpu_index);
-                }
-                catch (...)
-                {
-                }
-            }
-            if (AmdGpuBackend::is_available())
-            {
-                try
-                {
-                    return AmdGpuBackend::get_device_name(gpu_index);
                 }
                 catch (...)
                 {

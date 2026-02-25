@@ -120,9 +120,7 @@ int main() {
         }
 
         // PowerMonitor를 한 번만 생성 — 폴링 스레드를 공유하여 효율적
-        zeus::PowerMonitor::Config cfg;
-        cfg.polling_interval_s = 0.05;  // 50ms polling
-        zeus::PowerMonitor monitor({zeus::DeviceType::JetsonSoC}, cfg);
+        zeus::PowerMonitor monitor({zeus::DeviceType::JetsonSoC});
 
         example_device_detection(monitor);
         example_power_query(monitor);

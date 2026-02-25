@@ -19,7 +19,6 @@
 #include <string>
 
 #include "../device/gpu_nvidia.h"
-#include "../device/gpu_amd.h"
 #include "../device/soc_jetson.h"
 #include "../device/soc_apple.h"
 #include "measurement.h"
@@ -37,7 +36,6 @@ public:
     /** Non-owning pointers to active backends (nullptr = not active). */
     struct BackendPtrs {
         NvidiaGpuBackend*  nvidia  = nullptr;
-        AmdGpuBackend*     amd     = nullptr;
         JetsonSoCBackend*  jetson  = nullptr;
         AppleSoCBackend*   apple   = nullptr;
     };
@@ -65,10 +63,6 @@ public:
         if (backends_.nvidia) {
             state.nvidia_snap = backends_.nvidia->snapshot_energy_j();
         }
-        if (backends_.amd) {
-            state.amd_snap = backends_.amd->snapshot_energy_j();
-        }
-
         // SoC snapshots
         if (backends_.jetson) {
             state.jetson_snap = backends_.jetson->snapshot_energy_j();
@@ -108,13 +102,6 @@ public:
                 result.gpu_energy[kv.first] = kv.second;
             }
         }
-        if (backends_.amd) {
-            auto gpu_delta = backends_.amd->compute_energy_delta_j(state.amd_snap);
-            for (const auto& kv : gpu_delta) {
-                result.gpu_energy[kv.first] = kv.second;
-            }
-        }
-
         // === SoC energy ===
         if (backends_.jetson) {
             auto soc_delta = backends_.jetson->compute_energy_delta_j(state.jetson_snap);
@@ -142,7 +129,6 @@ private:
 
         // GPU snapshots (gpu_index -> Joules)
         std::map<int, double> nvidia_snap;
-        std::map<int, double> amd_snap;
 
         // SoC snapshots (metric_name -> Joules)
         std::map<std::string, double> jetson_snap;

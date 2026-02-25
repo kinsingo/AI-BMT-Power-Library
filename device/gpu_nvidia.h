@@ -144,9 +144,8 @@ namespace zeus
 
         // ---- Construction ----
 
-        explicit NvidiaGpuBackend(const std::vector<int> &gpu_indices = {},
-                                  double polling_interval_s = 0.1)
-            : polling_active_(false), polling_interval_(polling_interval_s)
+        explicit NvidiaGpuBackend(const std::vector<int> &gpu_indices = {})
+            : polling_active_(false), polling_interval_(0.1)
         {
 #ifdef ZEUS_HAS_NVML
             NvmlContext::instance();
@@ -186,7 +185,6 @@ namespace zeus
                 start_polling();
 #else
             (void)gpu_indices;
-            (void)polling_interval_s;
             throw std::runtime_error(
                 "NVIDIA GPU monitoring requested but NVML was not compiled. "
                 "Rebuild with ZEUS_USE_NVML=ON (CMake) or ensure <nvml.h> is available.");

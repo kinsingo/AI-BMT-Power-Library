@@ -31,7 +31,6 @@ namespace zeus {
  */
 enum class DeviceType {
     NvidiaGPU,  ///< NVIDIA GPU via NVML (requires CUDA Toolkit at compile time)
-    AmdGPU,     ///< AMD GPU via ROCm SMI (requires ROCm at compile time)
     JetsonSoC,  ///< NVIDIA Jetson SoC via INA3221 sensor (Linux only)
     AppleSoC,   ///< Apple Silicon via IOKit (macOS only)
 };
@@ -42,7 +41,6 @@ enum class DeviceType {
 inline std::string device_type_to_string(DeviceType type) {
     switch (type) {
         case DeviceType::NvidiaGPU: return "NVIDIA GPU (NVML)";
-        case DeviceType::AmdGPU:    return "AMD GPU (ROCm SMI)";
         case DeviceType::JetsonSoC: return "Jetson SoC (INA3221)";
         case DeviceType::AppleSoC:  return "Apple Silicon (IOKit)";
         default:                    return "Unknown Device";
